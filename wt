@@ -144,22 +144,35 @@ cmd_add() {
     require_fzf
 
     local result query selected
-    result=$(printf '%s\n' "$branches" \
+    result=$(printf '✚ New branch…\n%s\n' "$branches" \
       | fzf_pick --print-query -q '' \
-                 --header="  $REPO_NAME  ·  pick a branch or type a new name
+                 --header="  $REPO_NAME  ·  pick a branch, or choose 'New branch…' to create one
 
   enter select · esc cancel" \
-                 --preview='git log -1 --oneline {1} --color=always 2>/dev/null || echo "new branch"' )
+                 --preview='
+                   if [ {1} = "✚ New branch…" ]; then
+                     echo "create a new branch from a base you pick"
+                   else
+                     git log -1 --oneline origin/{1} --color=always 2>/dev/null || echo "no preview"
+                   fi' )
     query=$(echo "$result" | head -1)
     selected=$(echo "$result" | sed -n '2p')
 
-    if [ -z "$query" ] && [ -n "$selected" ] && grep -qxF "$selected" <<< "$branches"; then
+    if [ "$selected" = "✚ New branch…" ] || [ -z "$selected" ] && [ -n "$query" ] && ! grep -qxF "$query" <<< "$branches"; then
+      if [ "$selected" = "✚ New branch…" ]; then
+        read -rp "  New branch name: " branch
+      else
+        branch="$query"
+      fi
+      if [ -z "$branch" ]; then
+        err "no branch name given"
+        exit 0
+      fi
+      is_new=true
+    elif [ -n "$selected" ] && grep -qxF "$selected" <<< "$branches"; then
       branch="$selected"
     elif [ -n "$query" ] && grep -qxF "$query" <<< "$branches"; then
       branch="$query"
-    elif [ -n "$query" ]; then
-      branch="$query"
-      is_new=true
     else
       err "no branch selected"
       exit 0
