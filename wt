@@ -35,7 +35,7 @@ FZF_OPTS=(
   --color=preview-fg:#cdd6f4,preview-bg:#1e1e2e,preview-border:#585b70
 )
 
-fzf_pick() { fzf --preview-window=down:4:wrap "${FZF_OPTS[@]}" "$@"; }
+fzf_pick() { fzf --preview-window='right:55%:wrap' --no-separator --gap=0 "${FZF_OPTS[@]}" "$@"; }
 
 usage() {
   cat <<EOF
@@ -44,9 +44,9 @@ ${B}${M}wt${N} — interactive git worktree manager
 ${B}Usage:${N} wt [command]
 
 ${B}Commands:${N}
-  (none)    show menu (add / go / remove / list)
+  (none)    pick a worktree and print its path (default)
   add       add a new worktree interactively
-  go        pick a worktree and print its path (for cd)
+  go        alias for default — pick worktree, print path
   ls, list  list worktrees for this repo
   rm [name] remove a worktree (interactive or by partial name)
 
@@ -57,38 +57,13 @@ ${B}Options (add):${N}
                            optional positional: <base> ref to branch from (default: HEAD)
                              e.g.  wt add -b release/v1.2.3 origin/main
 
-${B}Shell integration:${N}
-  alias wtgo='cd \$(wt go)'
+${B}Shell integration:${N} add to your shell rc:
+  wtgo() { cd "\$(wt)"; }    # type 'wtgo' to jump to a worktree
 EOF
   exit 0
 }
 
 # --- commands ---
-
-cmd_menu() {
-  require_fzf
-  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
-    err "not in a git repository"
-    exit 1
-  }
-  REPO_NAME=$(basename "$REPO_ROOT")
-  WORKTREE_COUNT=$(git worktree list | wc -l | tr -d ' ')
-
-  local choice
-  choice=$(printf 'Add\tcreate a new worktree\nGo\tjump to existing worktree\nRemove\tdelete a worktree' \
-    | fzf --footer="  $REPO_NAME  ·  $WORKTREE_COUNT worktrees  ·  ↑↓ navigate · enter to act · esc to close" \
-          --preview='wt ls 2>/dev/null' \
-          --preview-window='right:50%:wrap' \
-          "${FZF_OPTS[@]}" \
-          --gap=0 \
-          --no-separator \
-    | cut -f1)
-  case "$choice" in
-    Add)    cmd_add ;;
-    Go)     cmd_go ;;
-    Remove) cmd_remove "" ;;
-  esac
-}
 
 cmd_add() {
   local copy_env=true copy_glob=".env*" new_branch="" base=""
@@ -229,11 +204,9 @@ cmd_go() {
   REPO_NAME=$(basename "$REPO_ROOT")
   local path
   path=$(get_worktrees "$REPO_ROOT" \
-    | fzf_pick --header="  $REPO_NAME  ·  go to worktree
-
-  enter to print path · esc cancel" \
-               --preview='git -C {3} log -1 --oneline --color=always 2>/dev/null || echo "no commits"' \
-    | cut -f3)
+    | fzf_pick --footer="  $REPO_NAME  ·  enter to copy path · try: cd \$(wt)" \
+               --preview='wt_preview "" "" "" {4}' \
+    | cut -f4)
   [ -n "$path" ] && printf '%s' "$path"
 }
 
@@ -242,16 +215,20 @@ cmd_list() {
     err "not in a git repository"
     exit 1
   }
-  git worktree list --porcelain | awk -v curr="$REPO_ROOT" \
+  # Find the main worktree path (branch == main)
+  local main_path
+  main_path=$(git worktree list --porcelain \
+    | awk '/^worktree/ { p=$2 } /^branch/ && $2 == "refs/heads/main" { print p; exit }')
+  git worktree list --porcelain | awk -v curr="$REPO_ROOT" -v main="$main_path" \
     -v Y="$Y" -v S="$S" -v B="$B" -v N="$N" '
       /^worktree/ { path=$2 }
       /^branch/   { branch=$2; gsub(/^refs\/heads\//, "", branch) }
       /^HEAD/     { head=substr($2,1,7) }
       /^$/ {
-        if (path == curr)
-          printf "  %s┃%s %s%-30s%s  %s%s%s  %s%s%s\n", Y, N, B, branch, N, S, head, N, S, path, N
-        else
-          printf "  %s│%s  %-30s  %s%s%s  %s%s%s\n", S, N, branch, S, head, N, S, path, N
+        marker = "  "
+        if (path == curr) marker = sprintf("%s●%s ", Y, N)
+        if (path == main) marker = sprintf("%s★%s ", S, N)
+        printf "  %s%-30s  %s%s%s  %s%s%s\n", marker, branch, S, head, N, S, path, N
         path=branch=head=""
       }'
 }
@@ -276,19 +253,29 @@ cmd_remove() {
 
   if [ -z "$target" ]; then
     target=$(echo "$worktrees" \
-      | fzf_pick --header="  $REPO_NAME  ·  pick a worktree to REMOVE
-
-  ctrl-d to remove · esc to cancel" \
-                 --bind='enter:ignore' \
-                 --bind='ctrl-d:become(wt rm {3})' \
-                 --preview='git -C {3} log -1 --oneline --color=always 2>/dev/null || echo "no commits"' \
-      | cut -f3)
+      | fzf_pick --footer="  $REPO_NAME  ·  enter to pick · esc cancel" \
+                 --preview='wt_preview "" "" "" {4}' \
+      | cut -f4)
   else
-    target=$(echo "$worktrees" | grep "$target" | head -1 | cut -f3)
+    target=$(echo "$worktrees" | grep "$target" | head -1 | cut -f4)
   fi
 
   if [ -z "$target" ]; then
     err "no worktree selected"
+    exit 0
+  fi
+
+  # Confirmation step
+  local confirm
+  confirm=$(printf 'Yes, remove\nNo, cancel' \
+    | fzf --footer="  $REPO_NAME  ·  remove $target?" \
+          --header="  This will remove the worktree at $target
+
+  ↑↓ select · enter confirm" \
+          "${FZF_OPTS[@]}" --gap=0 --no-separator)
+
+  if [ "$confirm" != "Yes, remove" ]; then
+    err "cancelled"
     exit 0
   fi
 
@@ -311,12 +298,32 @@ get_worktrees() {
     /^branch/  { branch=$2; gsub(/^refs\/heads\//, "", branch) }
     /^HEAD/    { head=substr($2,1,7) }
     /^$/ {
-      prefix=""
-      if (path == curr) prefix="● "
-      if (path == main) branch = branch " (main)"
-      print prefix branch "\t" head "\t" path
+      marker = "  "
+      if (path == curr) marker = "● "
+      if (path == main) marker = marker "★"
+      if (marker == "  ★") marker = " ★"
+      print marker "\t" branch "\t" head "\t" path
       path=branch=head=""
-    }'
+    }' | sort
+}
+
+# Rich preview for fzf — shows commits, status, and dirty indicator
+wt_preview() {
+  local path="$4"
+  if [ -z "$path" ] || [ ! -d "$path" ]; then
+    echo "no preview"
+    return
+  fi
+  git -C "$path" log --oneline -8 --color=always 2>/dev/null
+  echo
+  echo "── status ──"
+  local status
+  status=$(git -C "$path" status --short 2>/dev/null)
+  if [ -n "$status" ]; then
+    echo "$status"
+  else
+    echo "  clean"
+  fi
 }
 
 resolve_wt_root() {
@@ -344,7 +351,7 @@ require_fzf() {
 
 # --- main ---
 case "${1:-}" in
-  "")      cmd_menu ;;
+  "")      cmd_go ;;
   -h|--help) usage ;;
   add)    shift; cmd_add "$@" ;;
   go)     cmd_go ;;
