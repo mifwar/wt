@@ -124,57 +124,49 @@ cmd_add() {
     branch="$new_branch"
     is_new=true
   else
-    # Interactive: pick from remote branches OR type a new name
+    # Interactive: ask "new branch or existing?" first
+    require_fzf
     info "syncing with origin…"
     git fetch origin >/dev/null 2>&1 & disown
 
-    local branches
-    branches=$(git branch -r --format='%(refname:short)' \
-      | sed 's|^origin/||' \
-      | grep -v '^HEAD$' \
-      | sort -u)
-
-    if [ -z "$branches" ]; then
-      err "no remote branches found"
-      exit 1
-    fi
-
-    require_fzf
-
-    local result query selected
-    result=$(printf '✚ New branch…\n%s\n' "$branches" \
-      | fzf_pick --print-query -q '' \
-                 --header="  $REPO_NAME  ·  pick a branch, or choose 'New branch…' to create one
+    local mode
+    mode=$(printf 'New branch\nExisting branch' \
+      | fzf --header="  $REPO_NAME  ·  worktree type
 
   enter select · esc cancel" \
-                 --preview='
-                   if [ {1} = "✚ New branch…" ]; then
-                     echo "create a new branch from a base you pick"
-                   else
-                     git log -1 --oneline origin/{1} --color=always 2>/dev/null || echo "no preview"
-                   fi' )
-    query=$(echo "$result" | head -1)
-    selected=$(echo "$result" | sed -n '2p')
+            "${FZF_OPTS[@]}" --gap=0 --no-separator)
 
-    if [ "$selected" = "✚ New branch…" ] || [ -z "$selected" ] && [ -n "$query" ] && ! grep -qxF "$query" <<< "$branches"; then
-      if [ "$selected" = "✚ New branch…" ]; then
+    case "$mode" in
+      "New branch")
         read -rp "  New branch name: " branch
-      else
-        branch="$query"
-      fi
-      if [ -z "$branch" ]; then
-        err "no branch name given"
-        exit 0
-      fi
-      is_new=true
-    elif [ -n "$selected" ] && grep -qxF "$selected" <<< "$branches"; then
-      branch="$selected"
-    elif [ -n "$query" ] && grep -qxF "$query" <<< "$branches"; then
-      branch="$query"
-    else
-      err "no branch selected"
-      exit 0
-    fi
+        if [ -z "$branch" ]; then
+          err "no branch name given"
+          exit 0
+        fi
+        is_new=true
+        ;;
+      "Existing branch")
+        local branches
+        branches=$(git branch -r --format='%(refname:short)' \
+          | sed 's|^origin/||' \
+          | grep -v '^HEAD$' \
+          | sort -u)
+        if [ -z "$branches" ]; then
+          err "no remote branches found"
+          exit 1
+        fi
+        branch=$(printf '%s\n' "$branches" \
+          | fzf_pick --header="  $REPO_NAME  ·  pick a branch
+
+  enter select · esc cancel" \
+                     --preview='git log -1 --oneline origin/{1} --color=always 2>/dev/null')
+        if [ -z "$branch" ]; then
+          err "no branch selected"
+          exit 0
+        fi
+        ;;
+      *) err "cancelled"; exit 0 ;;
+    esac
   fi
 
   local WORKTREE_PATH="$WT_ROOT/$REPO_NAME/$branch"
@@ -190,7 +182,12 @@ cmd_add() {
       local default
       default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
       # Pick base branch interactively
-      base=$(printf '%s' "$branches" \
+      local pick_branches
+      pick_branches=$(git branch -r --format='%(refname:short)' \
+        | sed 's|^origin/||' \
+        | grep -v '^HEAD$' \
+        | sort -u)
+      base=$(printf '%s' "$pick_branches" \
         | fzf_pick --header="  $REPO_NAME  ·  base branch for $branch
 
   ↑↓ select base · enter confirm · esc → default" \
