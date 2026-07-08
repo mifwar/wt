@@ -76,9 +76,7 @@ cmd_menu() {
 
   local choice
   choice=$(printf 'Add\tcreate a new worktree\nGo\tjump to existing worktree\nRemove\tdelete a worktree' \
-    | fzf --header="  $REPO_NAME  ·  $WORKTREE_COUNT worktrees
-
-  ↑↓ navigate · enter to act · esc to close" \
+    | fzf --footer="  $REPO_NAME  ·  $WORKTREE_COUNT worktrees  ·  ↑↓ navigate · enter to act · esc to close" \
           --preview='wt ls 2>/dev/null' \
           --preview-window='right:50%:wrap' \
           "${FZF_OPTS[@]}" \
