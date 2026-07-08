@@ -1,0 +1,2 @@
+# Ignore default worktree root if someone clones into a worktree dir
+.wt/
